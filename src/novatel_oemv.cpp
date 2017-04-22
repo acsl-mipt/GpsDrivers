@@ -114,6 +114,35 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     return 0;
 }
 
+unsigned long GPSDriverNovAtelOEMV::crc32Value(int i)
+{
+    int j;
+    unsigned long ulCRC;
+    ulCRC = i;
+    for ( j = 8 ; j > 0; j-- )
+    {
+        if ( ulCRC & 1 )
+            ulCRC = ( ulCRC >> 1 ) ^ crc32Polynonial;
+        else
+            ulCRC >>= 1;
+    }
+    return ulCRC;
+}
+
+unsigned long GPSDriverNovAtelOEMV::calculateBlockCRC32(unsigned long ulCount, unsigned char *ucBuffer)
+{
+    unsigned long ulTemp1;
+    unsigned long ulTemp2;
+    unsigned long ulCRC = 0;
+    while ( ulCount-- != 0 )
+    {
+        ulTemp1 = ( ulCRC >> 8 ) & 0x00FFFFFFL;
+        ulTemp2 = crc32Value( ((int) ulCRC ^ *ucBuffer++ ) & 0xff );
+        ulCRC = ulTemp1 ^ ulTemp2;
+    }
+    return( ulCRC );
+}
+
 void GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
 {
     if(!size || !data)
