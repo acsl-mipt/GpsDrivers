@@ -2,7 +2,8 @@
 
 const double GPSDriverNovAtelOEMV::_requestInterval = 0.05f;
 
-GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback, void *callback_user,
+GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
+                                           void *callback_user,
                                            struct vehicle_gps_position_s *gps_position,
                                            struct satellite_info_s *satellite_info) :
     GPSHelper(callback, callback_user),
@@ -10,9 +11,14 @@ GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback, void *callba
     _satellite_info(satellite_info),
     _lastMessage{0},
     _lastMessageSize(0),
-    _lastBlock()
+    _lastHeader(),
+    _lastBestpos(),
+    _lastBestvel()
 {
-
+    if(!_gps_position || !_satellite_info)
+    {
+        PX4_PANIC("NovAtel: Empty pointer for gps data!");
+    }
 }
 
 GPSDriverNovAtelOEMV::~GPSDriverNovAtelOEMV()
@@ -41,9 +47,10 @@ int GPSDriverNovAtelOEMV::receive(unsigned timeout)
         }
         else
         {
-            collectData(buffer, ret);
+            // bit 0 set: got gps position update
+            // bit 1 set: got satellite info update
 
-            return ret;
+            return collectData(buffer, ret);
         }
 
         /* abort after timeout if no useful packets received */
@@ -67,15 +74,17 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     }
 
     const unsigned int startBaud = 9600;
-    const unsigned int waitTime = 500;
+    const unsigned int waitTime = 100; // ms
 
+    // TODO: send only binary commands
+    // FIXME: check & change waitTime
     // Initial baudrate
     if(setBaudrate(startBaud) != 0)
     {
         PX4_ERR("NovAtel: Can't set %d baudrate at PX4", startBaud);
         return -1;
     }
-    if(!changeReceiverBaudrate(baudrate, waitTime))
+    if(!changeReceiverBaudrate(baudrate, waitTime * 4)) // because it's lower baudrate
     {
         return -1;
     }
@@ -143,10 +152,10 @@ unsigned long GPSDriverNovAtelOEMV::calculateBlockCRC32(unsigned long ulCount, u
     return( ulCRC );
 }
 
-void GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
+int GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
 {
     if(!size || !data)
-        return;
+        return 0;
 
     // start new collecting
     if(size + _lastMessageSize > _messageMaxSize)
@@ -156,7 +165,7 @@ void GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
 
     // Very big message - ignore it
     if(size > _messageMaxSize)
-        return;
+        return 0;
 
     for(size_t i = 0; i < size; ++i)
     {
@@ -166,9 +175,11 @@ void GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
     }
 
     // Try to find binary data header
+    int result(0);
     while(true)
     {
-        if(parseLastMessage())
+        result |= parseLastMessage();
+        if(result > 0)
         {
             // Buffer has data after parsing
             if(_lastMessageSize)
@@ -179,16 +190,18 @@ void GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
 
         break;
     }
+
+    return result;
 }
 
-bool GPSDriverNovAtelOEMV::parseLastMessage()
+int GPSDriverNovAtelOEMV::parseLastMessage()
 {
     // Parse binary
     // GNSS data is in the little endian
-    if(_lastMessageSize < _headerMinimumSize)
+    if(_lastMessageSize < sizeof(MessageHeader))
     {
         // nothing to parse
-        return false;
+        return 0;
     }
 
     if(_lastMessage[0] != 0xAA ||
@@ -222,38 +235,50 @@ bool GPSDriverNovAtelOEMV::parseLastMessage()
         if(newStart == _lastMessageSize)
         {
             // Wrong data. Will wait next...
-            return false;
+            return 0;
         }
     }
-
 
     // check datagram end
     uint16_t dataSize(0);
     memcpy(&dataSize, _lastMessage + 8, sizeof(dataSize));
 
     size_t needSize = _lastMessage[3] + dataSize + _crcSize;
-    // "The header length is variable as fields may be appended in the future."
+
     if(_lastMessageSize >= needSize &&
-       _lastMessage[3] >= _headerMinimumSize)
+       _lastMessage[3] == sizeof(MessageHeader))
     {
         // Start parsing
-        _lastBlock = DataBlock();
+        memcpy(&_lastHeader, _lastMessage, sizeof(_lastHeader));
 
-        _lastBlock.headerSize = _lastMessage[3];
-        _lastBlock.dataSize = dataSize;
+        // TODO: check CRC
+        int result(0);
+        switch (_lastHeader.messageId)
+        {
+            case Satvis:
+                handleSatvis(_lastMessage + _lastHeader.headerLength, _lastHeader.messageLength);
+                result |= 0x02;
+                break;
+            case Bestpos:
+                handleBestpos(_lastMessage + _lastHeader.headerLength);
+                result |= 0x01;
+                break;
+            case Bestvel:
+                handleBestvel(_lastMessage + _lastHeader.headerLength);
+                result |= 0x01;
+                break;
+            default:
+                break;
+        }
 
-        memcpy(&_lastBlock.messageId, _lastMessage + 4, sizeof(_lastBlock.messageId));
-
-        PX4_INFO("NovAtel: Ok: Got full message %d bytes, type: %d", needSize, _lastBlock.messageId);
-
-        // FIXME: inner message parsing
+        PX4_INFO("NovAtel: Ok: Got full message %d bytes, type: %d", needSize, _lastHeader.messageId);
 
         cutLastMessage(needSize);
 
-        return true;
+        return result;
     }
 
-    return false;
+    return 0;
 }
 
 void GPSDriverNovAtelOEMV::cutLastMessage(size_t amount)
@@ -276,6 +301,41 @@ void GPSDriverNovAtelOEMV::cutLastMessage(size_t amount)
     }
 }
 
+void GPSDriverNovAtelOEMV::handleSatvis(uint8_t *, size_t )
+{
+    // TODO: realize it (if it will be usefull)
+}
+
+void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
+{
+    if(!data)
+        return;
+
+    _lastBestpos.unwrapFrom(data);
+
+    // FIXME: determine fix_type (ask Korotkov)
+
+    _gps_position->satellites_used = _lastBestpos.nSolSVs;
+
+    _gps_position->lat = _lastBestpos.lat * 10e7;
+    _gps_position->lon = _lastBestpos.lon * 10e7;
+    _gps_position->alt = _lastBestpos.hgt * 10e3;
+
+    _gps_position->timestamp = gps_absolute_time();
+
+    ++_rate_lat_lon;
+
+
+//    if (ret > 0) {
+//		_gps_position->timestamp_time_relative = (int32_t)(_last_timestamp_time - _gps_position->timestamp);
+//	}
+}
+
+void GPSDriverNovAtelOEMV::handleBestvel(uint8_t *data)
+{
+    // FIXME: realization
+}
+
 bool GPSDriverNovAtelOEMV::changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime)
 {
     char baudCommand[48];
@@ -291,7 +351,7 @@ bool GPSDriverNovAtelOEMV::changeReceiverBaudrate(unsigned int baudrate, unsigne
 
         if(receive(waitTime) <= 0)
         {
-            PX4_WARN("NovAtel: Timeout of baudrate setting (may be it's normal)");
+            PX4_WARN("NovAtel: Timeout of baudrate setting (null parser?)");
         }
         return true;
     }
@@ -313,7 +373,7 @@ bool GPSDriverNovAtelOEMV::prepareReceiver(unsigned int waitTime)
 
     if(receive(waitTime) <= 0)
     {
-        PX4_WARN("NovAtel: Timeout of preparation commands setting (may be it's normal)");
+        PX4_WARN("NovAtel: Timeout of preparation commands setting (null parser?)");
     }
 
     return true;
@@ -333,7 +393,7 @@ bool GPSDriverNovAtelOEMV::requestPosition(double interval, unsigned int waitTim
         }
         if(receive(waitTime) <= 0)
         {
-            PX4_WARN("NovAtel: Timeout of getting position (may be it's normal)");
+            PX4_WARN("NovAtel: Timeout of getting position (null parser?)");
         }
 
         return true;
@@ -356,7 +416,7 @@ bool GPSDriverNovAtelOEMV::requestVelocity(double interval, unsigned int waitTim
         }
         if(receive(waitTime) <= 0)
         {
-            PX4_WARN("NovAtel: Timeout of getting velocity (may be it's normal)");
+            PX4_WARN("NovAtel: Timeout of getting velocity (null parser?)");
         }
 
         return true;
@@ -379,7 +439,7 @@ bool GPSDriverNovAtelOEMV::requestSatelliteInfo(double interval, unsigned int wa
         }
         if(receive(waitTime) <= 0)
         {
-            PX4_WARN("NovAtel: Timeout of getting satellites (may be it's normal)");
+            PX4_WARN("NovAtel: Timeout of getting satellites (null parser?)");
         }
 
         return true;

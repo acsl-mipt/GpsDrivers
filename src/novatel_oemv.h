@@ -7,7 +7,8 @@
 class GPSDriverNovAtelOEMV : public GPSHelper
 {
 public:
-    GPSDriverNovAtelOEMV(GPSCallbackPtr callback, void *callback_user,
+    GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
+                         void *callback_user,
                          struct vehicle_gps_position_s *gps_position,
                          struct satellite_info_s *satellite_info);
     ~GPSDriverNovAtelOEMV();
@@ -125,6 +126,10 @@ private:
         {
             memset(this, 0, sizeof(MessageLogBestpos));
         }
+        void unwrapFrom(uint8_t *data)
+        {
+            memcpy(this, data, sizeof(MessageLogBestpos));
+        }
     } __attribute__((packed));
 
     struct MessageLogBestvel
@@ -141,6 +146,10 @@ private:
         MessageLogBestvel()
         {
             memset(this, 0, sizeof(MessageLogBestvel));
+        }
+        void unwrapFrom(uint8_t *data)
+        {
+            memcpy(this, data, sizeof(MessageLogBestvel));
         }
     } __attribute__((packed));
 
@@ -160,7 +169,7 @@ private:
         {}
         bool isParsed() const {return parsed;}
     };
-    static const size_t _headerMinimumSize = 3 + 25;
+
     static const size_t _messageMaxSize = GPS_READ_BUFFER_SIZE * 2;
     static const size_t _crcSize = 4;
     static const double _requestInterval;
@@ -173,10 +182,14 @@ private:
             unsigned char *ucBuffer ); /* Data block */
 
 private:
-    void collectData(uint8_t *data, size_t size);
-    bool parseLastMessage();
+    int collectData(uint8_t *data, size_t size);
+    int parseLastMessage();
     void prepareLastMessage();
     void cutLastMessage(size_t amount);
+
+    void handleSatvis(uint8_t *data, size_t size);
+    void handleBestpos(uint8_t *data/*, size_t size = sizeof(MessageLogBestpos)*/);
+    void handleBestvel(uint8_t *data/*, size_t size = sizeof(MessageLogBestvel)*/);
 
     bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 1000);
     bool prepareReceiver(unsigned int waitTime = 1000);
@@ -191,7 +204,11 @@ private:
     uint8_t _lastMessage[_messageMaxSize];
     size_t _lastMessageSize;
 
-    DataBlock _lastBlock;
+    // From receiver message
+    MessageHeader     _lastHeader;
+    MessageLogBestpos _lastBestpos;
+    MessageLogBestvel _lastBestvel;
+
 
     GPSDriverNovAtelOEMV(const GPSDriverNovAtelOEMV&) = delete;
     GPSDriverNovAtelOEMV &operator=(const GPSDriverNovAtelOEMV&) = delete;
