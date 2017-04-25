@@ -23,6 +23,11 @@ GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
     }
 }
 
+GPSDriverNovAtelOEMV::~GPSDriverNovAtelOEMV()
+{
+    // TODO: unlogall
+}
+
 int GPSDriverNovAtelOEMV::receive(unsigned timeout)
 {
     uint8_t buffer[GPS_READ_BUFFER_SIZE] = {0};
@@ -136,15 +141,13 @@ unsigned long GPSDriverNovAtelOEMV::crc32Value(int i)
     return ulCRC;
 }
 
-unsigned long GPSDriverNovAtelOEMV::calculateBlockCRC32(unsigned long ulCount, unsigned char *ucBuffer)
+unsigned long GPSDriverNovAtelOEMV::calculateBlockCRC32(uint8_t *data, size_t size)
 {
-    unsigned long ulTemp1;
-    unsigned long ulTemp2;
     unsigned long ulCRC = 0;
-    while ( ulCount-- != 0 )
+    while ( size-- != 0 )
     {
-        ulTemp1 = ( ulCRC >> 8 ) & 0x00FFFFFFL;
-        ulTemp2 = crc32Value( ((int) ulCRC ^ *ucBuffer++ ) & 0xff );
+        unsigned long ulTemp1 = ( ulCRC >> 8 ) & 0x00FFFFFFL;
+        unsigned long ulTemp2 = crc32Value( ((int) ulCRC ^ *data++ ) & 0xff );
         ulCRC = ulTemp1 ^ ulTemp2;
     }
     return( ulCRC );
@@ -255,20 +258,24 @@ int GPSDriverNovAtelOEMV::parseLastMessage()
         memcpy(&_lastHeader, _lastMessage, sizeof(_lastHeader));
 
         // TODO: check CRC
-        int result(0);
+        int result(0xC0); // FIXME: testing // receive() > 0 but bits 0,1 are zero
+        uint8_t *from = _lastMessage + _lastHeader.headerLength;
         switch (_lastHeader.messageId)
         {
             case Satvis:
-                handleSatvis(_lastMessage + _lastHeader.headerLength, _lastHeader.messageLength);
+                handleSatvis(from, _lastHeader.messageLength);
                 result |= 0x02;
                 break;
             case Bestpos:
-                handleBestpos(_lastMessage + _lastHeader.headerLength);
+                handleBestpos(from);
                 result |= 0x01;
                 break;
             case Bestvel:
-                handleBestvel(_lastMessage + _lastHeader.headerLength);
-                result |= 0xFF; // FIXME: testing // Data was updated, but publishing only by Bestpos
+                // Data was updated, but publishing only by Bestpos
+                handleBestvel(from);
+                break;
+            case Com:
+                handleResponse(from, _lastHeader.messageLength);
                 break;
             default:
                 break;
@@ -371,27 +378,86 @@ void GPSDriverNovAtelOEMV::handleBestvel(uint8_t *data)
     _gps_position->cog_rad = _wrap_pi(dir);
 }
 
+void GPSDriverNovAtelOEMV::handleResponse(uint8_t *data, size_t size, unsigned int commandId)
+{
+    // It's general format for command responses
+    // uint32  - Response message code
+    // uint8*n - String containing the ASCII response in hex coding to match the ID above
+
+    if(!data)
+        return;
+
+    uint32_t responseId(0);
+    memcpy(&responseId, data, sizeof(responseId));
+
+    if(responseId != 1) // TODO: add list of messages (pdf)
+    {
+        if(commandId)
+        {
+            PX4_WARN("Command #%d is failed: %d. Message: %.*s", commandId, size - sizeof(responseId), data + sizeof(responseId));
+        }
+        else
+        {
+            PX4_WARN("Command's failed. Message: %.*s", size - sizeof(responseId), data + sizeof(responseId));
+        }
+    }
+//    int ss = 2;
+//    char t[4];
+//    t[0] = 0x4F;
+//    t[1] = 0x4B;
+
+//    t[2] = 0x31;
+
+//    t[3] = 0x32;
+////    PX4_INFO("Response: %.*s|    %d: ", size - sizeof(responseId), data + sizeof(responseId), size - sizeof(responseId)); // FIXME: remove
+//    PX4_INFO("Response: %.*s|", ss, t); // FIXME: remove
+//    printf("Response: %2s|", t);
+    // if !!!
+    uint8_t text[size - sizeof(responseId) + 1];
+    memcpy(text, data + sizeof(responseId), size - sizeof(responseId));
+    text[size - sizeof(responseId)] = '\0';
+    PX4_INFO("Response: %s|", text); // FIXME: remove
+}
+
 bool GPSDriverNovAtelOEMV::changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime)
 {
-    char baudCommand[48];
+    MessageHeader header;
+    MessageCom body;
 
-    int n = snprintf(baudCommand, sizeof(baudCommand), "com %d N 8 1 N off\r\n", baudrate);
-    if(n > 0)
-    {
-        if(write(baudCommand, n) != n)
+    header.messageId = Com;
+    header.messageLength = sizeof(body);
+
+    memcpy(_lastCommand, &header, sizeof(header));
+    int size(sizeof(header));
+
+    memcpy(_lastCommand + size, &body, sizeof(body));
+    size += sizeof(body);
+
+    uint32_t crc = calculateBlockCRC32(_lastCommand, size);
+    memcpy(_lastCommand + size, &crc, sizeof(crc));
+    size += sizeof(crc);
+
+
+//    char baudCommand[48];
+
+//    int n = snprintf(baudCommand, sizeof(baudCommand), "com %d N 8 1 N off\r\n", baudrate);
+//    if(n > 0)
+//    {
+        if(write(_lastCommand, size) != size)
+//        if(write(baudCommand, n) != n)
         {
             PX4_ERR("NovAtel: Can't send %d baudrate to OEMV", baudrate);
             return false;
         }
-
+PX4_INFO("NovAtel: COM - size: %d", size);
         if(receive(waitTime) <= 0)
         {
             PX4_WARN("NovAtel: Timeout of baudrate setting (null parser?)");
         }
         return true;
-    }
+//    }
 
-    return false;
+//    return false;
 }
 
 bool GPSDriverNovAtelOEMV::prepareReceiver(unsigned int waitTime)

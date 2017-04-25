@@ -11,6 +11,7 @@ public:
                          void *callback_user,
                          struct vehicle_gps_position_s *gps_position,
                          struct satellite_info_s *satellite_info);
+    ~GPSDriverNovAtelOEMV();
 
     int receive(unsigned timeout);
     int configure(unsigned &baudrate, OutputMode output_mode);
@@ -19,6 +20,8 @@ private:
     // Inner types and defines
     enum MessagesId
     {
+        Log     = 1,
+        Com     = 4,
         Satvis  = 48,
         Bestpos = 42,
         Bestvel = 99,
@@ -44,7 +47,7 @@ private:
 
         MessageHeader() :
             sync{0xAA, 0x44, 0x12},
-            headerLength(0),
+            headerLength(sizeof(MessageHeader)),
             messageId(0),
             messageType(0x00), // Original message, binary
             portAddress(0xC0), // This port
@@ -62,6 +65,33 @@ private:
         uint8_t syncByte(size_t index) const
         {
             return (index < 3) ? sync[index] : 0;
+        }
+    } __attribute__((packed));
+
+    struct MessageCom
+    {
+        uint32_t port;
+        uint32_t baud;
+        uint32_t parity;
+        uint32_t databits;
+        uint32_t stopbits;
+        uint32_t handshake;
+        uint32_t echo;
+        uint32_t breakDetection;
+
+        MessageCom() :
+            port(6), // THISPORT
+            baud(115200),
+            parity(0), // no
+            databits(8),
+            stopbits(1),
+            handshake(0), // no
+            echo(0), // off
+            breakDetection(1) // on - default value
+        {}
+        void unwrapFrom(uint8_t *data)
+        {
+            memcpy(this, data, sizeof(MessageCom));
         }
     } __attribute__((packed));
 
@@ -161,9 +191,7 @@ private:
     // 32-bit CRC. OEMV Family Firmware Version 3.800 Reference Manual Rev 8
     static const unsigned long crc32Polynonial = 0xEDB88320L;
     static unsigned long crc32Value(int i);
-    static unsigned long calculateBlockCRC32(
-            unsigned long ulCount,    /* Number of bytes in the data block */
-            unsigned char *ucBuffer ); /* Data block */
+    static unsigned long calculateBlockCRC32(uint8_t *data, size_t size);
 
 private:
     int collectData(uint8_t *data, size_t size);
@@ -172,8 +200,9 @@ private:
     void cutLastMessage(size_t amount);
 
     void handleSatvis(uint8_t *data, size_t size);
-    void handleBestpos(uint8_t *data/*, size_t size = sizeof(MessageLogBestpos)*/);
-    void handleBestvel(uint8_t *data/*, size_t size = sizeof(MessageLogBestvel)*/);
+    void handleBestpos(uint8_t *data);
+    void handleBestvel(uint8_t *data);
+    void handleResponse(uint8_t *data, size_t size, unsigned int commandId = 0);
 
     bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 1000);
     bool prepareReceiver(unsigned int waitTime = 1000);
@@ -185,10 +214,12 @@ private:
     struct vehicle_gps_position_s *_gps_position;
     struct satellite_info_s *_satellite_info;
 
+    // Exchange buffers
+    uint8_t _lastCommand[_messageMaxSize / 2];
     uint8_t _lastMessage[_messageMaxSize];
     size_t _lastMessageSize;
 
-    // From receiver message
+    // Parsed messages from receiver
     MessageHeader     _lastHeader;
     MessageLogBestpos _lastBestpos;
     MessageLogBestvel _lastBestvel;
