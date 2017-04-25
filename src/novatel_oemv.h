@@ -11,12 +11,20 @@ public:
                          void *callback_user,
                          struct vehicle_gps_position_s *gps_position,
                          struct satellite_info_s *satellite_info);
-    ~GPSDriverNovAtelOEMV();
+
     int receive(unsigned timeout);
     int configure(unsigned &baudrate, OutputMode output_mode);
 
 private:
     // Inner types and defines
+    enum MessagesId
+    {
+        Satvis  = 48,
+        Bestpos = 42,
+        Bestvel = 99,
+        Version = 37
+    };
+
     struct MessageHeader
     {
         uint8_t  sync[3];
@@ -56,13 +64,6 @@ private:
             return (index < 3) ? sync[index] : 0;
         }
     } __attribute__((packed));
-
-    enum MessagesId
-    {
-        Satvis  = 48,
-        Bestpos = 49,
-        Bestvel = 99
-    };
 
     struct MessageLogSatvisPrefix
     {
@@ -152,23 +153,6 @@ private:
             memcpy(this, data, sizeof(MessageLogBestvel));
         }
     } __attribute__((packed));
-
-    struct DataBlock // FIXME: remove it (?)
-    {
-        bool parsed;
-        uint8_t  headerSize;
-        uint16_t messageId;
-        uint16_t dataSize;
-
-
-        DataBlock() :
-            parsed(false),
-            headerSize(0),
-            messageId(0),
-            dataSize(0)
-        {}
-        bool isParsed() const {return parsed;}
-    };
 
     static const size_t _messageMaxSize = GPS_READ_BUFFER_SIZE * 2;
     static const size_t _crcSize = 4;

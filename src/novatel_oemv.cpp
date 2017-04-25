@@ -1,4 +1,6 @@
 #include "novatel_oemv.h"
+#include "lib/geo/geo.h"
+#include <algorithm>
 
 const double GPSDriverNovAtelOEMV::_requestInterval = 0.05f;
 
@@ -15,15 +17,10 @@ GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
     _lastBestpos(),
     _lastBestvel()
 {
-    if(!_gps_position || !_satellite_info)
+    if(!_gps_position)
     {
         PX4_PANIC("NovAtel: Empty pointer for gps data!");
     }
-}
-
-GPSDriverNovAtelOEMV::~GPSDriverNovAtelOEMV()
-{
-
 }
 
 int GPSDriverNovAtelOEMV::receive(unsigned timeout)
@@ -34,29 +31,26 @@ int GPSDriverNovAtelOEMV::receive(unsigned timeout)
 
     while (true)
     {
-        int ret = read(buffer, sizeof(buffer), timeout);
+        int readed = read(buffer, sizeof(buffer), timeout);
 
-        if (ret < 0)
+        if (readed < 0)
         {
             PX4_WARN("NovAtel: UART reading problem");
-            return ret;
+            return readed;
         }
-        else if (ret == 0)
+        else if (readed == 0)
         {
             // waiting
         }
         else
         {
-            // bit 0 set: got gps position update
-            // bit 1 set: got satellite info update
-
-            return collectData(buffer, ret);
+            return collectData(buffer, readed);
         }
 
         /* abort after timeout if no useful packets received */
         if (timeStarted + timeout * 1000 < gps_absolute_time())
         {
-            PX4_WARN("NovAtel: Timed out at receiving (read())");
+            PX4_WARN("NovAtel: Timed out at receiving: read()");
             return -1;
         }
     }
@@ -64,8 +58,11 @@ int GPSDriverNovAtelOEMV::receive(unsigned timeout)
 
 int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
 {
-    PX4_INFO("\n");
-    PX4_INFO("NovAtel: Reconfiguration...");
+    PX4_INFO("\nNovAtel: Reconfiguration...");
+
+    memset(_gps_position, 0, sizeof(struct vehicle_gps_position_s));
+    if(_satellite_info)
+        memset(_satellite_info, 0, sizeof(struct satellite_info_s));
 
     if(baudrate != 115200)
     {
@@ -77,7 +74,8 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     const unsigned int waitTime = 100; // ms
 
     // TODO: send only binary commands
-    // FIXME: check & change waitTime
+    // TODO: check & change waitTime
+    // FIXME: check receiving and return correct value
     // Initial baudrate
     if(setBaudrate(startBaud) != 0)
     {
@@ -154,6 +152,9 @@ unsigned long GPSDriverNovAtelOEMV::calculateBlockCRC32(unsigned long ulCount, u
 
 int GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
 {
+    // bit 0 set: got gps position update
+    // bit 1 set: got satellite info update
+
     if(!size || !data)
         return 0;
 
@@ -178,8 +179,10 @@ int GPSDriverNovAtelOEMV::collectData(uint8_t *data, size_t size)
     int result(0);
     while(true)
     {
-        result |= parseLastMessage();
-        if(result > 0)
+        int parsed = parseLastMessage();
+        result |= parsed;
+
+        if(parsed > 0)
         {
             // Buffer has data after parsing
             if(_lastMessageSize)
@@ -265,16 +268,15 @@ int GPSDriverNovAtelOEMV::parseLastMessage()
                 break;
             case Bestvel:
                 handleBestvel(_lastMessage + _lastHeader.headerLength);
-                result |= 0x01;
+                result |= 0xFF; // FIXME: testing // Data was updated, but publishing only by Bestpos
                 break;
             default:
                 break;
         }
 
-        PX4_INFO("NovAtel: Ok: Got full message %d bytes, type: %d", needSize, _lastHeader.messageId);
-
         cutLastMessage(needSize);
 
+//        PX4_INFO("NovAtel: Ok: Got full message %d bytes, type: %d; return: %d", needSize, _lastHeader.messageId, result); // FIXME: remove
         return result;
     }
 
@@ -313,7 +315,26 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
 
     _lastBestpos.unwrapFrom(data);
 
-    // FIXME: determine fix_type (ask Korotkov)
+    _gps_position->fix_type = 1; // Data was got
+    if(_lastBestpos.posType == 16)
+    {
+        _gps_position->fix_type = 3;
+    }
+    else if(_lastBestpos.posType > 16 && _lastBestpos.posType < 19)
+    {
+        _gps_position->fix_type = 4;
+    }
+    else if(_lastBestpos.posType > 31 && _lastBestpos.posType < 35)
+    {
+        _gps_position->fix_type = 5;
+    }
+    else if(_lastBestpos.posType > 47 && _lastBestpos.posType < 51)
+    {
+        _gps_position->fix_type = 6;
+    }
+
+    _gps_position->timestamp = gps_absolute_time();
+    _gps_position->time_utc_usec = _gps_position->timestamp;
 
     _gps_position->satellites_used = _lastBestpos.nSolSVs;
 
@@ -321,19 +342,33 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
     _gps_position->lon = _lastBestpos.lon * 10e7;
     _gps_position->alt = _lastBestpos.hgt * 10e3;
 
-    _gps_position->timestamp = gps_absolute_time();
+    // TODO: recalculate eph, epv
+    _gps_position->eph = std::max(_lastBestpos.latSigma, _lastBestpos.lonSigma);
+    _gps_position->epv = _lastBestpos.hgtSigma;
+
+    //    if (ret > 0) {
+    //		_gps_position->timestamp_time_relative = (int32_t)(_last_timestamp_time - _gps_position->timestamp);
+    //	}
 
     ++_rate_lat_lon;
-
-
-//    if (ret > 0) {
-//		_gps_position->timestamp_time_relative = (int32_t)(_last_timestamp_time - _gps_position->timestamp);
-//	}
 }
 
 void GPSDriverNovAtelOEMV::handleBestvel(uint8_t *data)
 {
-    // FIXME: realization
+    if(!data)
+        return;
+
+    _lastBestvel.unwrapFrom(data);
+
+    _gps_position->s_variance_m_s = 1.0f;
+    _gps_position->vel_m_s = _lastBestvel.horSpd;
+
+    double dir(_lastBestvel.trkGnd * static_cast<double>(M_DEG_TO_RAD_F));
+    _gps_position->vel_n_m_s = _lastBestvel.horSpd * cos(dir);
+    _gps_position->vel_e_m_s = _lastBestvel.horSpd * sin(dir);
+    _gps_position->vel_d_m_s = -_lastBestvel.vertSpd;
+    _gps_position->vel_ned_valid = true;
+    _gps_position->cog_rad = _wrap_pi(dir);
 }
 
 bool GPSDriverNovAtelOEMV::changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime)
