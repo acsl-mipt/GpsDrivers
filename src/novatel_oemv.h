@@ -2,7 +2,6 @@
 #define NOVATEL_OEMV_H
 
 #include "gps_helper.h"
-#include "../../definitions.h"
 
 class GPSDriverNovAtelOEMV : public GPSHelper
 {
@@ -20,12 +19,44 @@ private:
     // Inner types and defines
     enum MessagesId
     {
-        Log     = 1,
-        Com     = 4,
-        Satvis  = 48,
-        Bestpos = 42,
-        Bestvel = 99,
-        Version = 37
+        Log          = 1,
+        Interfacemod = 3,
+        Com          = 4,
+        Unlogall     = 38,
+
+        Satvis       = 48,
+        Bestpos      = 42,
+        Bestvel      = 99,
+
+        Version      = 37
+    };
+    enum Triggers
+    {
+        OnNew       = 0,
+        OnChanged   = 1,
+        OnTime      = 2, // Output on a time interval
+        OnNext      = 3,
+        Once        = 4,
+        OnMark      = 5
+    };
+    enum Ports
+    {
+        NoPort      = 0x0,
+        Com1All     = 0x1, // All virtual ports for COM port 1
+        Com2All     = 0x2,
+        Com3All     = 0x3,
+        ThisPortAll = 0x6, // All virtual ports for the current port
+        AllPorts    = 0x8,
+        Com1        = 0x20, // COM port 1, virtual port 0
+        Com2        = 0x40,
+        Com3        = 0x60,
+        ThisPort    = 0xC0, // Current COM port, virtual port 0
+    };
+    enum InterfaceModes
+    {
+        Novatel = 1,
+        Rtcm    = 2,
+        Rtca    = 3
     };
 
     struct MessageHeader
@@ -50,7 +81,7 @@ private:
             headerLength(sizeof(MessageHeader)),
             messageId(0),
             messageType(0x00), // Original message, binary
-            portAddress(0xC0), // This port
+            portAddress(ThisPort),
             messageLength(0),
             sequence(0),
             idleTime(0),
@@ -80,7 +111,7 @@ private:
         uint32_t breakDetection;
 
         MessageCom() :
-            port(6), // THISPORT
+            port(ThisPortAll),
             baud(115200),
             parity(0), // no
             databits(8),
@@ -92,6 +123,68 @@ private:
         void unwrapFrom(uint8_t *data)
         {
             memcpy(this, data, sizeof(MessageCom));
+        }
+    } __attribute__((packed));
+
+    struct MessageInterfacemode
+    {
+        uint32_t port;
+        uint32_t rxtype;
+        uint32_t txtype;
+        uint32_t responses;
+
+        MessageInterfacemode() :
+            port(ThisPortAll), // THISPORT
+            rxtype(Novatel),
+            txtype(Novatel),
+            responses(1) // on
+        {}
+        void unwrapFrom(uint8_t *data)
+        {
+            memcpy(this, data, sizeof(MessageInterfacemode));
+        }
+    } __attribute__((packed));
+
+    struct MessageUnlogall
+    {
+        uint32_t port;
+        uint32_t held;
+
+        MessageUnlogall() :
+            port(AllPorts),
+            held(0) // Does not remove logs with the HOLD parameter
+        {}
+        void unwrapFrom(uint8_t *data)
+        {
+            memcpy(this, data, sizeof(MessageUnlogall));
+        }
+    } __attribute__((packed));
+
+    struct MessageLog
+    {
+        uint32_t port;
+        uint16_t messageId;
+        uint8_t  messageType;
+        uint8_t  reserved;
+        uint32_t trigger;
+        double   period;
+        double   offset;
+        uint32_t hold;
+
+        explicit MessageLog(uint16_t id = 42) :
+            port(ThisPort),
+            messageId(id),
+            messageType(0x00), // Original message, binary
+            reserved(0),
+            trigger(OnTime),
+            period(0.05),
+            offset(0.0),
+            hold(0) // Allow log to be removed by the UNLOGALL command
+        {}
+        static double correctPeriod(double value);
+        void unwrapFrom(uint8_t *data)
+        {
+            memcpy(this, data, sizeof(MessageLog));
         }
     } __attribute__((packed));
 
@@ -122,10 +215,10 @@ private:
             prnSlot(0),
             glofreq(0),
             health(0),
-            elev(0.0f),
-            az(0.0f),
-            trueDop(0.0f),
-            appDop(0.0f)
+            elev(0.0),
+            az(0.0),
+            trueDop(0.0),
+            appDop(0.0)
         {}
     } __attribute__((packed));
 
@@ -192,6 +285,7 @@ private:
     static const unsigned long crc32Polynonial = 0xEDB88320L;
     static unsigned long crc32Value(int i);
     static unsigned long calculateBlockCRC32(uint8_t *data, size_t size);
+    bool checkCrc(uint8_t *data, size_t size);
 
 private:
     int collectData(uint8_t *data, size_t size);
@@ -204,11 +298,16 @@ private:
     void handleBestvel(uint8_t *data);
     void handleResponse(uint8_t *data, size_t size, unsigned int commandId = 0);
 
-    bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 1000);
-    bool prepareReceiver(unsigned int waitTime = 1000);
+    bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 1000, bool silent = false);
+    bool prepareReceiver(unsigned int waitTime = 1000, bool hidden = false);
     bool requestPosition(double interval, unsigned int waitTime = 1000);
     bool requestVelocity(double interval, unsigned int waitTime = 1000);
     bool requestSatelliteInfo(double interval, unsigned int waitTime = 1000);
+
+    template <typename M>
+    int serializeMessage(uint16_t messageId, const M *body);
+    template <typename M>
+    int serializeMessage(uint16_t messageId);
 
 private:
     struct vehicle_gps_position_s *_gps_position;
@@ -236,6 +335,34 @@ inline void GPSDriverNovAtelOEMV::prepareLastMessage()
         _lastMessage[i] = 0;
     }
     _lastMessageSize = 0;
+}
+
+template<typename M>
+int GPSDriverNovAtelOEMV::serializeMessage(uint16_t messageId, const M *body)
+{
+    MessageHeader header;
+
+    header.messageId = messageId;
+    header.messageLength = sizeof(M);
+
+    memcpy(_lastCommand, &header, sizeof(header));
+    int size(sizeof(header));
+
+    memcpy(_lastCommand + size, body, sizeof(M));
+    size += sizeof(M);
+
+    uint32_t crc = calculateBlockCRC32(_lastCommand, size);
+    memcpy(_lastCommand + size, &crc, sizeof(crc));
+    size += sizeof(crc);
+
+    return size;
+}
+
+template <typename M>
+int GPSDriverNovAtelOEMV::serializeMessage(uint16_t messageId)
+{
+    M body;
+    return serializeMessage<M>(messageId, &body);
 }
 
 #endif // NOVATEL_OEMV_H
