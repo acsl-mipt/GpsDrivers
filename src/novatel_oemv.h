@@ -285,7 +285,7 @@ private:
     static const unsigned long crc32Polynonial = 0xEDB88320L;
     static unsigned long crc32Value(int i);
     static unsigned long calculateBlockCRC32(uint8_t *data, size_t size);
-    bool checkCrc(uint8_t *data, size_t size);
+    static bool checkCrc(uint8_t *data, size_t size);
 
 private:
     int collectData(uint8_t *data, size_t size);
