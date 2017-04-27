@@ -19,16 +19,16 @@ private:
     // Inner types and defines
     enum MessagesId
     {
-        Log          = 1,
-        Interfacemod = 3,
-        Com          = 4,
-        Unlogall     = 38,
+        Log           = 1,
+        Interfacemode = 3,
+        Com           = 4,
+        Unlogall      = 38,
 
-        Satvis       = 48,
-        Bestpos      = 42,
-        Bestvel      = 99,
+        Satvis        = 48,
+        Bestpos       = 42,
+        Bestvel       = 99,
 
-        Version      = 37
+        Version       = 37
     };
     enum Triggers
     {
@@ -57,6 +57,13 @@ private:
         Novatel = 1,
         Rtcm    = 2,
         Rtca    = 3
+    };
+    enum ResponseMessages
+    {
+        ResponseOk               = 1,
+        RequestedLogDoesNotExist = 2,
+        InvalidMessageId         = 6,
+        RequestedRateIsInvalid   = 21,
     };
 
     struct MessageHeader
@@ -120,10 +127,6 @@ private:
             echo(0), // off
             breakDetection(1) // on - default value
         {}
-        void unwrapFrom(uint8_t *data)
-        {
-            memcpy(this, data, sizeof(MessageCom));
-        }
     } __attribute__((packed));
 
     struct MessageInterfacemode
@@ -139,10 +142,6 @@ private:
             txtype(Novatel),
             responses(1) // on
         {}
-        void unwrapFrom(uint8_t *data)
-        {
-            memcpy(this, data, sizeof(MessageInterfacemode));
-        }
     } __attribute__((packed));
 
     struct MessageUnlogall
@@ -154,10 +153,6 @@ private:
             port(AllPorts),
             held(0) // Does not remove logs with the HOLD parameter
         {}
-        void unwrapFrom(uint8_t *data)
-        {
-            memcpy(this, data, sizeof(MessageUnlogall));
-        }
     } __attribute__((packed));
 
     struct MessageLog
@@ -182,10 +177,6 @@ private:
             hold(0) // Allow log to be removed by the UNLOGALL command
         {}
         static double correctPeriod(double value);
-        void unwrapFrom(uint8_t *data)
-        {
-            memcpy(this, data, sizeof(MessageLog));
-        }
     } __attribute__((packed));
 
     struct MessageLogSatvisPrefix
@@ -250,10 +241,6 @@ private:
         {
             memset(this, 0, sizeof(MessageLogBestpos));
         }
-        void unwrapFrom(uint8_t *data)
-        {
-            memcpy(this, data, sizeof(MessageLogBestpos));
-        }
     } __attribute__((packed));
 
     struct MessageLogBestvel
@@ -270,10 +257,6 @@ private:
         MessageLogBestvel()
         {
             memset(this, 0, sizeof(MessageLogBestvel));
-        }
-        void unwrapFrom(uint8_t *data)
-        {
-            memcpy(this, data, sizeof(MessageLogBestvel));
         }
     } __attribute__((packed));
 
@@ -296,27 +279,28 @@ private:
     void handleSatvis(uint8_t *data, size_t size);
     void handleBestpos(uint8_t *data);
     void handleBestvel(uint8_t *data);
-    void handleResponse(uint8_t *data, size_t size, unsigned int commandId = 0);
+    static void handleResponse(uint8_t *data, size_t size, unsigned int commandId = 0);
 
-    bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 1000, bool silent = false);
-    bool prepareReceiver(unsigned int waitTime = 1000, bool hidden = false);
-    bool requestPosition(double interval, unsigned int waitTime = 1000);
-    bool requestVelocity(double interval, unsigned int waitTime = 1000);
-    bool requestSatelliteInfo(double interval, unsigned int waitTime = 1000);
+    bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 100, bool silent = false);
+    bool prepareReceiver(unsigned int waitTime = 100, bool hidden = false);
+    bool sendLogCommand(MessagesId command, double interval, unsigned int waitTime = 100);
 
+    static const char *commandName(unsigned int id);
     template <typename M>
     int serializeMessage(uint16_t messageId, const M *body);
     template <typename M>
     int serializeMessage(uint16_t messageId);
+    template <typename M>
+    void unserializeMessage(M *block, const uint8_t *data);
 
 private:
     struct vehicle_gps_position_s *_gps_position;
-    struct satellite_info_s *_satellite_info;
+    struct satellite_info_s       *_satellite_info;
 
     // Exchange buffers
     uint8_t _lastCommand[_messageMaxSize / 2];
     uint8_t _lastMessage[_messageMaxSize];
-    size_t _lastMessageSize;
+    size_t  _lastMessageSize;
 
     // Parsed messages from receiver
     MessageHeader     _lastHeader;
@@ -363,6 +347,15 @@ int GPSDriverNovAtelOEMV::serializeMessage(uint16_t messageId)
 {
     M body;
     return serializeMessage<M>(messageId, &body);
+}
+
+template<typename M>
+void GPSDriverNovAtelOEMV::unserializeMessage(M *block, const uint8_t *data)
+{
+    if(block && data)
+    {
+        memcpy(block, data, sizeof(M));
+    }
 }
 
 #endif // NOVATEL_OEMV_H

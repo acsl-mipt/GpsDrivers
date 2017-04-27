@@ -2,7 +2,7 @@
 #include "lib/geo/geo.h"
 #include <algorithm>
 
-const double GPSDriverNovAtelOEMV::_requestInterval = 0.05f;
+const double GPSDriverNovAtelOEMV::_requestInterval = 0.05;
 
 GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
                                            void *callback_user,
@@ -56,7 +56,7 @@ int GPSDriverNovAtelOEMV::receive(unsigned timeout)
         /* abort after timeout if no useful packets received */
         if (timeStarted + timeout * 1000 < gps_absolute_time())
         {
-            PX4_WARN("NovAtel: Timed out at receiving: read()");
+            PX4_WARN("NovAtel: Timed out at receiving data from OEMV: read()");
             return -1;
         }
     }
@@ -77,16 +77,15 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     }
 
     const unsigned int startBaud = 9600;
-    const unsigned int waitTime = 100; // ms
+    const unsigned int waitTime = 50; // ms
 
-    // TODO: check & change waitTime
     // Initial baudrate
     if(setBaudrate(startBaud) != 0)
     {
         PX4_ERR("NovAtel: Can't set %d baudrate at PX4", startBaud);
         return -1;
     }
-    if(!changeReceiverBaudrate(baudrate, waitTime * 4, true)) // because it's lower baudrate
+    if(!changeReceiverBaudrate(baudrate, waitTime * 2, true)) // because it's lower baudrate
     {
         return -1;
     }
@@ -109,17 +108,17 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     }
 
     // Get work data
-//    if(!requestSatelliteInfo(2.0f, 150))
-//    {
-//        return -1;
-//    }
-    if(!requestPosition(_requestInterval, waitTime))
+    if(!sendLogCommand(Bestpos, _requestInterval, waitTime))
     {
         return -1;
     }
-    if(!requestVelocity(_requestInterval, waitTime))
+    if(!sendLogCommand(Bestvel, _requestInterval, waitTime))
     {
         return -1;
+    }
+    if(_satellite_info)
+    {
+        sendLogCommand(Satvis, 2.0, waitTime);
     }
 
     return 0;
@@ -268,31 +267,38 @@ int GPSDriverNovAtelOEMV::parseLastMessage()
         // Start parsing
         memcpy(&_lastHeader, _lastMessage, sizeof(_lastHeader));
 
-        // TODO: check CRC
         int result(0xC0); // receive() > 0 but bits 0,1 are zero
-        uint8_t *from = _lastMessage + _lastHeader.headerLength;
-        switch (_lastHeader.messageId)
+
+        if(checkCrc(_lastMessage, needSize))
         {
-            case Satvis:
-                handleSatvis(from, _lastHeader.messageLength);
-                result |= 0x02;
-                break;
-            case Bestpos:
-                handleBestpos(from);
-                result |= 0x01;
-                break;
-            case Bestvel:
-                // Data was updated, but publishing only by Bestpos
-                handleBestvel(from);
-                break;
-            case Com:
-            case Interfacemod:
-            case Unlogall:
-            case Log:
-                handleResponse(from, _lastHeader.messageLength, _lastHeader.messageId);
-                break;
-            default:
-                break;
+            uint8_t *from = _lastMessage + _lastHeader.headerLength;
+            switch (_lastHeader.messageId)
+            {
+                case Satvis:
+                    handleSatvis(from, _lastHeader.messageLength);
+                    result |= 0x02;
+                    break;
+                case Bestpos:
+                    handleBestpos(from);
+                    result |= 0x01;
+                    break;
+                case Bestvel:
+                    // Data was updated, but publishing only by Bestpos
+                    handleBestvel(from);
+                    break;
+                case Com:
+                case Interfacemode:
+                case Unlogall:
+                case Log:
+                    handleResponse(from, _lastHeader.messageLength, _lastHeader.messageId);
+                    break;
+                default:
+                    break;
+            }
+        }
+        else
+        {
+            PX4_WARN("Wrong CRC, message id %d", _lastHeader.messageId);
         }
 
         cutLastMessage(needSize);
@@ -333,7 +339,7 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
     if(!data)
         return;
 
-    _lastBestpos.unwrapFrom(data);
+    unserializeMessage(&_lastBestpos, data);
 
     _gps_position->fix_type = 1; // Data was got
     if(_lastBestpos.posType == 16)
@@ -366,10 +372,6 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
     _gps_position->eph = std::max(_lastBestpos.latSigma, _lastBestpos.lonSigma);
     _gps_position->epv = _lastBestpos.hgtSigma;
 
-    //    if (ret > 0) {
-    //		_gps_position->timestamp_time_relative = (int32_t)(_last_timestamp_time - _gps_position->timestamp);
-    //	}
-
     ++_rate_lat_lon;
 }
 
@@ -378,7 +380,7 @@ void GPSDriverNovAtelOEMV::handleBestvel(uint8_t *data)
     if(!data)
         return;
 
-    _lastBestvel.unwrapFrom(data);
+    unserializeMessage(&_lastBestvel, data);
 
     _gps_position->s_variance_m_s = 1.0f;
     _gps_position->vel_m_s = _lastBestvel.horSpd;
@@ -403,7 +405,7 @@ void GPSDriverNovAtelOEMV::handleResponse(uint8_t *data, size_t size, unsigned i
     uint32_t responseId(0);
     memcpy(&responseId, data, sizeof(responseId));
 
-    if(responseId != 1) // TODO: add list of messages (pdf)
+    if(responseId != ResponseOk)
     {
         // Pixhawk/Nuttx doesn't understand "%.*s"-format. And Pixhawk has very tiny memory stack...
         // So we use heap memory and add null-terminator.
@@ -414,11 +416,11 @@ void GPSDriverNovAtelOEMV::handleResponse(uint8_t *data, size_t size, unsigned i
 
         if(commandId)
         {
-            PX4_WARN("NovAtel: Command #%d is failed, code %d. Message: %s", commandId, responseId, text);
+            PX4_WARN("NovAtel: %s command (code %d) is failed, error %d. Message: %s", commandName(commandId), commandId, responseId, text);
         }
         else
         {
-            PX4_WARN("NovAtel: Command's failed, code %d. Message: %s", responseId, text);
+            PX4_WARN("NovAtel: Command's failed, error %d. Message: %s", responseId, text);
         }
 
         delete[] text;
@@ -454,7 +456,7 @@ bool GPSDriverNovAtelOEMV::prepareReceiver(unsigned int waitTime, bool hidden)
 
     int size(0);
 
-    size = serializeMessage<MessageInterfacemode>(Interfacemod);
+    size = serializeMessage<MessageInterfacemode>(Interfacemode);
     sendProblem |= (write(_lastCommand, size) != size);
 
     size = serializeMessage<MessageUnlogall>(Unlogall);
@@ -478,71 +480,43 @@ bool GPSDriverNovAtelOEMV::prepareReceiver(unsigned int waitTime, bool hidden)
     return true;
 }
 
-bool GPSDriverNovAtelOEMV::requestPosition(double interval, unsigned int waitTime)
+bool GPSDriverNovAtelOEMV::sendLogCommand(GPSDriverNovAtelOEMV::MessagesId command, double interval, unsigned int waitTime)
 {
-    // TODO: one method with error text param
     MessageLog message;
-    message.messageId = Bestpos;
+    message.messageId = command;
     message.period = MessageLog::correctPeriod(interval);
 
-    int size = serializeMessage<MessageLog>(Log, &message);
+    int size = serializeMessage(Log, &message);
 
     if(write(_lastCommand, size) != size)
     {
-        PX4_ERR("NovAtel: Can't send position request to OEMV");
+        PX4_ERR("NovAtel: Can't send %s command to OEMV", commandName(command));
         return false;
     }
 
     if(receive(waitTime) <= 0)
     {
-        PX4_WARN("NovAtel: Timeout of getting position");
+        PX4_WARN("NovAtel: Timeout of receiving %s command from OEMV", commandName(command));
         return false;
     }
     return true;
 }
 
-bool GPSDriverNovAtelOEMV::requestVelocity(double interval, unsigned int waitTime)
+const char *GPSDriverNovAtelOEMV::commandName(unsigned int id)
 {
-    MessageLog message;
-    message.messageId = Bestvel;
-    message.period = MessageLog::correctPeriod(interval);
-
-    int size = serializeMessage<MessageLog>(Log, &message);
-
-    if(write(_lastCommand, size) != size)
+    // Upper case like in Reference
+    switch (id)
     {
-        PX4_ERR("NovAtel: Can't send velocity request to OEMV");
-        return false;
+        case Log:           return "LOG";
+        case Interfacemode: return "INTERFACEMODE";
+        case Com:           return "COM";
+        case Unlogall:      return "UNLOGALL";
+        case Satvis:        return "SATVIS";
+        case Bestpos:       return "BESTPOS";
+        case Bestvel:       return "BESTVEL";
+        case Version:       return "VERSION";
+        default:            return "UNKNOWN";
     }
-
-    if(receive(waitTime) <= 0)
-    {
-        PX4_WARN("NovAtel: Timeout of getting velocity");
-        return false;
-    }
-    return true;
-}
-
-bool GPSDriverNovAtelOEMV::requestSatelliteInfo(double interval, unsigned int waitTime)
-{
-    MessageLog message;
-    message.messageId = Satvis;
-    message.period = MessageLog::correctPeriod(interval);
-
-    int size = serializeMessage<MessageLog>(Log, &message);
-
-    if(write(_lastCommand, size) != size)
-    {
-        PX4_ERR("NovAtel: Can't send satellites request to OEMV");
-        return false;
-    }
-
-    if(receive(waitTime) <= 0)
-    {
-        PX4_WARN("NovAtel: Timeout of getting satellites");
-        return false;
-    }
-    return true;
 }
 
 double GPSDriverNovAtelOEMV::MessageLog::correctPeriod(double value)
