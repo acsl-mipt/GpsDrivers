@@ -1,6 +1,7 @@
 #include "novatel_oemv.h"
 #include "lib/geo/geo.h"
 #include <algorithm>
+#include <climits>
 
 const double GPSDriverNovAtelOEMV::_requestInterval = 0.05;
 
@@ -368,11 +369,18 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
     _gps_position->lon = _lastBestpos.lon * 10e7;
     _gps_position->alt = _lastBestpos.hgt * 10e3;
 
+    // OEMV sends Earth-radius when it doesn't have solution
+    // This value (in mm) is bigger than int32
+    if(_gps_position->alt == INT_MIN || _gps_position->alt == INT_MAX)
+    {
+        _gps_position->alt = 0; // NOTE: Temporary fix for huge value
+    }
+
     // TODO: recalculate eph, epv
     _gps_position->eph = std::max(_lastBestpos.latSigma, _lastBestpos.lonSigma);
     _gps_position->epv = _lastBestpos.hgtSigma;
 
-    ++_rate_lat_lon;
+    ++_rate_count_lat_lon;
 }
 
 void GPSDriverNovAtelOEMV::handleBestvel(uint8_t *data)
@@ -391,6 +399,8 @@ void GPSDriverNovAtelOEMV::handleBestvel(uint8_t *data)
     _gps_position->vel_d_m_s = -_lastBestvel.vertSpd;
     _gps_position->vel_ned_valid = true;
     _gps_position->cog_rad = _wrap_pi(dir);
+
+    ++_rate_count_vel;
 }
 
 void GPSDriverNovAtelOEMV::handleResponse(uint8_t *data, size_t size, unsigned int commandId)
