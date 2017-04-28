@@ -365,9 +365,9 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
 
     _gps_position->satellites_used = _lastBestpos.nSolSVs;
 
-    _gps_position->lat = _lastBestpos.lat * 10e7;
-    _gps_position->lon = _lastBestpos.lon * 10e7;
-    _gps_position->alt = _lastBestpos.hgt * 10e3;
+    _gps_position->lat = _lastBestpos.lat * 1e7;
+    _gps_position->lon = _lastBestpos.lon * 1e7;
+    _gps_position->alt = _lastBestpos.hgt * 1e3;
 
     // OEMV sends Earth-radius when it doesn't have solution
     // This value (in mm) is bigger than int32
