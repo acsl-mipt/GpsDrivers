@@ -269,6 +269,8 @@ private:
     static unsigned long crc32Value(int i);
     static unsigned long calculateBlockCRC32(uint8_t *data, size_t size);
     static bool checkCrc(uint8_t *data, size_t size);
+    static float ephFromGeoSigma(double latitude,
+                                 double latitudeSigma, double longtitudeSigma);
 
 private:
     int collectData(uint8_t *data, size_t size);
