@@ -3,15 +3,16 @@
 #include <algorithm>
 #include <climits>
 
-const double GPSDriverNovAtelOEMV::_requestInterval = 0.05;
-
 GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
                                            void *callback_user,
                                            struct vehicle_gps_position_s *gps_position,
-                                           struct satellite_info_s *satellite_info) :
+                                           struct satellite_info_s *satellite_info,
+                                           float requestFrequency) :
     GPSHelper(callback, callback_user),
     _gps_position(gps_position),
     _satellite_info(satellite_info),
+    _requestInterval(1.0 / static_cast<double>(requestFrequency)),
+    _correctTimeout(50),
     _lastCommand{0},
     _lastMessage{0},
     _lastMessageSize(0),
@@ -23,6 +24,7 @@ GPSDriverNovAtelOEMV::GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
     {
         PX4_PANIC("NovAtel: Empty pointer for gps data!");
     }
+    setRequestFrequency(requestFrequency);
 }
 
 GPSDriverNovAtelOEMV::~GPSDriverNovAtelOEMV()
@@ -32,6 +34,8 @@ GPSDriverNovAtelOEMV::~GPSDriverNovAtelOEMV()
 
 int GPSDriverNovAtelOEMV::receive(unsigned timeout)
 {
+    timeout = (timeout < _correctTimeout) ? _correctTimeout : timeout;
+
     uint8_t buffer[GPS_READ_BUFFER_SIZE] = {0};
 
     gps_abstime timeStarted = gps_absolute_time();
@@ -78,7 +82,7 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     }
 
     const unsigned int startBaud = 9600;
-    const unsigned int waitTime = 50; // ms
+    const unsigned int waitTime = _correctTimeout; // ms
 
     // Initial baudrate
     if(setBaudrate(startBaud) != 0)
@@ -120,6 +124,16 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
     if(_satellite_info)
     {
         sendLogCommand(Satvis, 2.0, waitTime);
+    }
+
+    if(_correctTimeout < (_requestInterval * 1000.0 * 2.0))
+    {
+        _correctTimeout = std::abs(_requestInterval * 1000.0 * 2.0);
+
+        if(_correctTimeout > 10000)
+        {
+            _correctTimeout = 10000;
+        }
     }
 
     return 0;

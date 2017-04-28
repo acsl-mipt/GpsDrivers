@@ -159,6 +159,8 @@ public:
      */
     virtual int restartSurveyIn() { return 0; }
 
+    void setRequestFrequency(float request_frequency) {_request_frequency = request_frequency;}
+    float requestFrequency() const {return _request_frequency;}
 
 protected:
 
@@ -224,4 +226,5 @@ protected:
     float _rate_vel{0.0f};
 
     uint64_t _interval_rate_start{0};
+    float _request_frequency{1.0f};
 };

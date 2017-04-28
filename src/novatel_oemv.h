@@ -9,7 +9,8 @@ public:
     GPSDriverNovAtelOEMV(GPSCallbackPtr callback,
                          void *callback_user,
                          struct vehicle_gps_position_s *gps_position,
-                         struct satellite_info_s *satellite_info);
+                         struct satellite_info_s *satellite_info,
+                         float requestFrequency);
     ~GPSDriverNovAtelOEMV();
 
     int receive(unsigned timeout);
@@ -262,7 +263,6 @@ private:
 
     static const size_t _messageMaxSize = GPS_READ_BUFFER_SIZE * 2;
     static const size_t _crcSize = 4;
-    static const double _requestInterval;
 
     // 32-bit CRC. OEMV Family Firmware Version 3.800 Reference Manual Rev 8
     static const unsigned long crc32Polynonial = 0xEDB88320L;
@@ -298,6 +298,8 @@ private:
 private:
     struct vehicle_gps_position_s *_gps_position;
     struct satellite_info_s       *_satellite_info;
+    double                         _requestInterval;
+    unsigned int                   _correctTimeout; // Receiving timeout for set request interval
 
     // Exchange buffers
     uint8_t _lastCommand[_messageMaxSize / 2];
