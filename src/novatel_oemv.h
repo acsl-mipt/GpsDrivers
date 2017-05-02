@@ -265,7 +265,7 @@ private:
     static const size_t _crcSize = 4;
 
     // 32-bit CRC. OEMV Family Firmware Version 3.800 Reference Manual Rev 8
-    static const unsigned long crc32Polynonial = 0xEDB88320L;
+    static const unsigned long crc32Polynomial = 0xEDB88320L;
     static unsigned long crc32Value(int i);
     static unsigned long calculateBlockCRC32(uint8_t *data, size_t size);
     static bool checkCrc(uint8_t *data, size_t size);

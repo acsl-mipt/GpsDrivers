@@ -147,7 +147,7 @@ unsigned long GPSDriverNovAtelOEMV::crc32Value(int i)
     for ( j = 8 ; j > 0; j-- )
     {
         if ( ulCRC & 1 )
-            ulCRC = ( ulCRC >> 1 ) ^ crc32Polynonial;
+            ulCRC = ( ulCRC >> 1 ) ^ crc32Polynomial;
         else
             ulCRC >>= 1;
     }
