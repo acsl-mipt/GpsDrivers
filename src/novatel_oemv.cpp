@@ -390,7 +390,7 @@ void GPSDriverNovAtelOEMV::handleBestpos(uint8_t *data)
         _gps_position->alt = 0; // NOTE: Temporary fix for huge value
     }
 
-    _gps_position->eph = ephFromGeoSigma(_lastBestpos.lat, _lastBestpos.latSigma, _lastBestpos.lonSigma);
+    _gps_position->eph = ephFromGeoSigma(_lastBestpos.latSigma, _lastBestpos.lonSigma);
     _gps_position->epv = _lastBestpos.hgtSigma;
 
     ++_rate_count_lat_lon;
@@ -542,14 +542,9 @@ const char *GPSDriverNovAtelOEMV::commandName(unsigned int id)
     }
 }
 
-float GPSDriverNovAtelOEMV::ephFromGeoSigma(double latitude,
-                                            double latitudeSigma, double longtitudeSigma)
+float GPSDriverNovAtelOEMV::ephFromGeoSigma(double latitudeSigma, double longtitudeSigma)
 {
-    double refLat = latitude + 0.5 * latitudeSigma;
-    double nm = latitudeSigma * 333400.0 / 3.0;
-    double em = longtitudeSigma * 1001879.0 * std::cos(refLat * M_PI / 180.0) / 9.0;
-
-    return static_cast<float>(std::sqrt(em * em + nm * nm));
+    return static_cast<float>(std::sqrt(latitudeSigma * latitudeSigma + longtitudeSigma * longtitudeSigma));
 }
 
 double GPSDriverNovAtelOEMV::MessageLog::correctPeriod(double value)
