@@ -40,6 +40,11 @@ private:
         Once        = 4,
         OnMark      = 5
     };
+
+    /*  Decimal port values 0 through 16 are only available to the UNLOGALL command
+        and cannot be used in the UNLOG command or in the binary
+        message header.
+    */
     enum Ports
     {
         NoPort      = 0x0,
@@ -151,7 +156,7 @@ private:
         uint32_t held;
 
         MessageUnlogall() :
-            port(AllPorts),
+            port(ThisPortAll),
             held(0) // Does not remove logs with the HOLD parameter
         {}
     } __attribute__((packed));
