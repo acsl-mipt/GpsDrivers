@@ -126,6 +126,9 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
         sendLogCommand(Satvis, 2.0, waitTime);
     }
 
+    // for output port
+    prepareRtcmReceiver(Com2All, baudrate, _requestInterval);
+
     if(_correctTimeout < (_requestInterval * 1000.0 * 2.0))
     {
         _correctTimeout = std::abs(_requestInterval * 1000.0 * 2.0);
@@ -452,7 +455,10 @@ void GPSDriverNovAtelOEMV::handleResponse(uint8_t *data, size_t size, unsigned i
 
 bool GPSDriverNovAtelOEMV::changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime, bool silent)
 {
-    int size = serializeMessage<MessageCom>(Com);
+    MessageCom message;
+    message.baud = baudrate;
+
+    int size = serializeMessage(Com, &message);
 
     if(write(_lastCommand, size) != size)
     {
@@ -503,6 +509,73 @@ bool GPSDriverNovAtelOEMV::prepareReceiver(unsigned int waitTime, bool hidden)
     return true;
 }
 
+bool GPSDriverNovAtelOEMV::prepareRtcmReceiver(Ports port, unsigned int baudrate, double interval)
+{
+    if(port != Com1All &&
+       port != Com2All &&
+       port != Com3All)
+    {
+        PX4_ERR("NovAtel: Wrong RTCM port, port code: %d",
+                port);
+        return false;
+    }
+    // Prepare another COM-port for reading RTCM and sending pos/vel data to output machine.
+    // Without answer waiting
+    bool sendProblem(false);
+    int size(0);
+
+    MessageCom comMessage;
+    comMessage.port = port;
+    comMessage.baud = MessageCom::correctBaudrate(baudrate);
+
+    size = serializeMessage(Com, &comMessage);
+    sendProblem |= (write(_lastCommand, size) != size);
+
+    // Log receiving with max frequency.
+    MessageLog logMessage;
+    logMessage.period = MessageLog::correctPeriod(interval);
+    switch (port)
+    {
+    case Com1All:
+        logMessage.port = Com1;
+        break;
+    case Com2All:
+        logMessage.port = Com2;
+        break;
+    case Com3All:
+        logMessage.port = Com3;
+        break;
+    default:
+        return false;
+    }
+
+    logMessage.messageId = Bestpos;
+    size = serializeMessage(Log, &logMessage);
+    sendProblem |= (write(_lastCommand, size) != size);
+
+    logMessage.messageId = Bestvel;
+    size = serializeMessage(Log, &logMessage);
+    sendProblem |= (write(_lastCommand, size) != size);
+
+    // RTCM
+    MessageInterfacemode ifMessage;
+    ifMessage.port = port;
+    ifMessage.rxtype = RtcmV3;
+    ifMessage.responses = 0; // Off
+
+    size = serializeMessage(Interfacemode, &ifMessage);
+    sendProblem |= (write(_lastCommand, size) != size);
+
+    if(sendProblem)
+    {
+        PX4_ERR("NovAtel: Can't prepare RTCM receiver, port code: %d, baud: %d",
+                port, comMessage.baud);
+        return false;
+    }
+
+    return true;
+}
+
 bool GPSDriverNovAtelOEMV::sendLogCommand(GPSDriverNovAtelOEMV::MessagesId command, double interval, unsigned int waitTime)
 {
     MessageLog message;
@@ -545,6 +618,32 @@ const char *GPSDriverNovAtelOEMV::commandName(unsigned int id)
 float GPSDriverNovAtelOEMV::ephFromGeoSigma(double latitudeSigma, double longtitudeSigma)
 {
     return static_cast<float>(std::sqrt(latitudeSigma * latitudeSigma + longtitudeSigma * longtitudeSigma));
+}
+
+unsigned int GPSDriverNovAtelOEMV::MessageCom::correctBaudrate(unsigned int baudrate)
+{
+    // OEMV Family Firmware Version 3.800 Reference Manual Rev 8
+    // Table 19, page 89
+    switch (baudrate)
+    {
+    case 300:
+    case 600:
+    case 900:
+    case 1200:
+    case 2400:
+    case 4800:
+    case 9600:
+    case 19200:
+    case 38400:
+    case 57600:
+    case 115200:
+    case 230400:
+        return baudrate;
+    default:
+        break;
+    }
+
+    return 115200;
 }
 
 double GPSDriverNovAtelOEMV::MessageLog::correctPeriod(double value)

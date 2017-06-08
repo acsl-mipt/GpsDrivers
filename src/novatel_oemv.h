@@ -60,9 +60,13 @@ private:
     };
     enum InterfaceModes
     {
-        Novatel = 1,
-        Rtcm    = 2,
-        Rtca    = 3
+        Novatel         = 1,
+        Rtcm            = 2,
+        Rtca            = 3,
+        RtcmV3          = 14,
+        NovatelBinary   = 15,
+        Generic         = 18,
+        MRtca           = 20
     };
     enum ResponseMessages
     {
@@ -70,6 +74,17 @@ private:
         RequestedLogDoesNotExist = 2,
         InvalidMessageId         = 6,
         RequestedRateIsInvalid   = 21,
+    };
+
+    enum MessageTypes
+    {
+        Binary              = 0x00,
+        Ascii               = 0x20,
+        AbbreviatedAscii    = 0x40,
+        NmeaReserved        = 0x60,
+
+        OriginalMessage     = 0x00,
+        REsponseMessage     = 0x80
     };
 
     struct MessageHeader
@@ -93,7 +108,7 @@ private:
             sync{0xAA, 0x44, 0x12},
             headerLength(sizeof(MessageHeader)),
             messageId(0),
-            messageType(0x00), // Original message, binary
+            messageType(Binary | OriginalMessage), // Original message, binary
             portAddress(ThisPort),
             messageLength(0),
             sequence(0),
@@ -133,6 +148,7 @@ private:
             echo(0), // off
             breakDetection(1) // on - default value
         {}
+        static unsigned int correctBaudrate(unsigned int baudrate);
     } __attribute__((packed));
 
     struct MessageInterfacemode
@@ -156,7 +172,7 @@ private:
         uint32_t held;
 
         MessageUnlogall() :
-            port(ThisPortAll),
+            port(AllPorts),
             held(0) // Does not remove logs with the HOLD parameter
         {}
     } __attribute__((packed));
@@ -172,10 +188,10 @@ private:
         double   offset;
         uint32_t hold;
 
-        explicit MessageLog(uint16_t id = 42) :
+        explicit MessageLog(uint16_t id = Bestpos) :
             port(ThisPort),
             messageId(id),
-            messageType(0x00), // Original message, binary
+            messageType(Binary | OriginalMessage), // Original message, binary
             reserved(0),
             trigger(OnTime),
             period(0.05),
@@ -289,6 +305,7 @@ private:
 
     bool changeReceiverBaudrate(unsigned int baudrate, unsigned int waitTime = 100, bool silent = false);
     bool prepareReceiver(unsigned int waitTime = 100, bool hidden = false);
+    bool prepareRtcmReceiver(Ports port, unsigned int baudrate, double interval = 0.05);
     bool sendLogCommand(MessagesId command, double interval, unsigned int waitTime = 100);
 
     static const char *commandName(unsigned int id);
