@@ -1,5 +1,6 @@
 #include "novatel_oemv.h"
 #include "lib/geo/geo.h"
+#include <systemlib/param/param.h>
 #include <algorithm>
 #include <climits>
 
@@ -126,8 +127,58 @@ int GPSDriverNovAtelOEMV::configure(unsigned &baudrate, GPSHelper::OutputMode)
         sendLogCommand(Satvis, 2.0, waitTime);
     }
 
-    // for output port
-    prepareRtcmReceiver(Com2All, baudrate, _requestInterval);
+    // for external port
+    param_t portP = param_find("GPS_NVTL_EXTPORT");
+    int extPort(0);
+    if (portP != PARAM_INVALID)
+    {
+        param_get(portP, &extPort);
+    }
+    Ports correctExtPort(NoPort);
+    switch (extPort)
+    {
+    case 1:
+        correctExtPort = Com1All;
+        break;
+    case 2:
+        correctExtPort = Com2All;
+        break;
+    case 3:
+        correctExtPort = Com3All;
+        break;
+    default:
+        break;
+    }
+
+    if(correctExtPort != NoPort)
+    {
+        // baud
+        param_t baudP = param_find("GPS_NVTL_EXTBAUD");
+        unsigned int extBaud(0);
+        if (baudP != PARAM_INVALID)
+        {
+            param_get(baudP, &extBaud);
+        }
+        if(!extBaud)
+            extBaud = baudrate;
+
+        // interval
+        param_t freqP = param_find("GPS_NVTL_EXTFREQ");
+        float extFreq(0.0f);
+        if (freqP != PARAM_INVALID)
+        {
+            param_get(freqP, &extFreq);
+        }
+        double extInterval(0.0);
+        if(extFreq <= 0.0f)
+            extInterval = _requestInterval;
+        else
+            extInterval = 1.0 / static_cast<double>(extFreq);
+
+        prepareRtcmReceiver(correctExtPort,
+                            extBaud,
+                            extInterval);
+    }
 
     if(_correctTimeout < (_requestInterval * 1000.0 * 2.0))
     {
